@@ -26,7 +26,7 @@ export const youtubePlayerParsing = async ({
     config,
     tokenMinter,
     metrics,
-    overrideCache = false,
+    overrideCache = true,
 }: {
     innertubeClient: Innertube;
     videoId: string;
@@ -50,7 +50,7 @@ export const youtubePlayerParsing = async ({
             tokenMinter,
         );
         const videoData = youtubePlayerResponse.data;
-
+        
         if (videoData.playabilityStatus.status === "ERROR") {
             return videoData;
         }
@@ -60,13 +60,13 @@ export const youtubePlayerParsing = async ({
             innertubeClient.actions,
             generateRandomString(16),
         );
-
+        //console.log(video)
         const streamingData = video.streaming_data;
 
         // Modify the original YouTube response to include deciphered URLs
         if (streamingData && videoData && videoData.streamingData) {
             const ecatcherServiceTracking = videoData.responseContext
-                ?.serviceTrackingParams.find((o: { service: string }) =>
+                ?.serviceTrackingParams?.find((o: { service: string }) =>
                     o.service === "ECATCHER"
                 );
             const clientNameUsed = ecatcherServiceTracking?.params?.find((

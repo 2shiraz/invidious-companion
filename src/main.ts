@@ -72,7 +72,7 @@ if (!innertubeClientOauthEnabled) {
 }
 
 Platform.shim.eval = jsInterpreter;
-
+console.log("[INFO] CREATING INNERTUBE CLIENT.");
 innertubeClient = await Innertube.create({
     enable_session_cache: false,
     retrieve_player: innertubeClientFetchPlayer,
@@ -228,15 +228,18 @@ if (import.meta.main) {
     const { signal } = controller;
     run(signal, config.server.port, config.server.host);
 
-    Deno.addSignalListener("SIGTERM", () => {
-        console.log("Caught SIGINT, shutting down...");
+    const shutdown = (signalName: string) => {
+        console.log(`Caught ${signalName}, shutting down...`);
         controller.abort();
         Deno.exit(0);
-    });
+    };
 
-    Deno.addSignalListener("SIGINT", () => {
-        console.log("Caught SIGINT, shutting down...");
-        controller.abort();
-        Deno.exit(0);
-    });
+    if (Deno.build.os !== "windows") {
+        Deno.addSignalListener("SIGTERM", () => shutdown("SIGTERM"));
+    }
+
+    Deno.addSignalListener("SIGINT", () => shutdown("SIGINT"));
+    if (Deno.build.os === "windows") {
+        Deno.addSignalListener("SIGBREAK", () => shutdown("SIGBREAK"));
+    }
 }

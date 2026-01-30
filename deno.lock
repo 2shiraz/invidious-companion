@@ -8,6 +8,7 @@
     "jsr:@std/encoding@1.0.7": "1.0.7",
     "jsr:@std/fs@1.0.14": "1.0.14",
     "jsr:@std/toml@1.0.2": "1.0.2",
+    "npm:googlevideo@4.0.4": "4.0.4",
     "npm:jsdom@26.1.0": "26.1.0",
     "npm:meriyah@6.1.4": "6.1.4"
   },
@@ -47,6 +48,9 @@
         "@csstools/css-tokenizer",
         "lru-cache"
       ]
+    },
+    "@bufbuild/protobuf@2.11.0": {
+      "integrity": "sha512-sBXGT13cpmPR5BMgHE6UEEfEaShh5Ror6rfN3yEK5si7QVrtZg8LEPQb0VVhiLRUslD2yLnXtnRzG035J/mZXQ=="
     },
     "@csstools/color-helpers@5.1.0": {
       "integrity": "sha512-S11EXWJyy0Mz5SYvRmY8nJYTFFd1LCNV+7cXyAgQtOOuzb4EsgfqDufL+9esx72/eLhsRdGZwaldu/h+E4t4BA=="
@@ -104,6 +108,12 @@
     },
     "entities@6.0.1": {
       "integrity": "sha512-aN97NXWF6AWBTahfVOIrB/NShkzi5H7F9r1s9mD3cDj4Ko5f2qhhVoYMibXF7GlLveb/D2ioWay8lxI97Ven3g=="
+    },
+    "googlevideo@4.0.4": {
+      "integrity": "sha512-S/rfuoPBI+qXCEUPJeVhXsHoISMgVhOz8hHSpGWa0OztfHhh+g9EKaEcqAb/+ttO7meoNQNqIy9dfIpz7HPc4g==",
+      "dependencies": [
+        "@bufbuild/protobuf"
+      ]
     },
     "html-encoding-sniffer@4.0.0": {
       "integrity": "sha512-Y22oTqIU4uuPgEemfz7NDJz6OeKf12Lsu+QC+s3BVpda64lTiMYCyGwg5ki4vFxkMwQdeZDl2adZoqUgdFuTgQ==",
@@ -230,7 +240,8 @@
       "integrity": "sha512-6qN4hJdMwfYBtE3YBTTHhoeuUrDBPZmbQaxWAqSALV/MeEnR5z1xd8UKud2RAkFoPkmB+hli1TZSnyi84xz1vQ==",
       "dependencies": [
         "iconv-lite"
-      ]
+      ],
+      "deprecated": true
     },
     "whatwg-mimetype@4.0.0": {
       "integrity": "sha512-QaKxh0eNIi2mE9p2vEdzfagOKHCcj1pJ56EEHGQOVxp8r9/iszLUUV7v89x9O1p/T+NlTM5W7jW6+cz4Fq1YVg=="
@@ -1137,13 +1148,13 @@
   "workspace": {
     "dependencies": [
       "jsr:@hono/hono@4.7.4",
-      "jsr:@luanrt/googlevideo@2.0.0",
       "jsr:@std/async@1.0.11",
       "jsr:@std/cli@^1.0.17",
       "jsr:@std/encoding@1.0.7",
       "jsr:@std/fs@1.0.14",
       "jsr:@std/path@1.0.8",
       "jsr:@std/toml@1.0.2",
+      "npm:googlevideo@4.0.4",
       "npm:jsdom@26.1.0",
       "npm:meriyah@6.1.4"
     ]
