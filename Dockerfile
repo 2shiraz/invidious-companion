@@ -154,7 +154,7 @@ ENV SERVER_BASE_PATH=/companion \
     THC_VERSION="${THC_VERSION}" \
     TINI_VERSION="${TINI_VERSION}"
 
-COPY ./config/ ./config/
+COPY ./config/config.example.toml ./config/config.example.toml
 
 # Switch to non-privileged user
 USER appuser
