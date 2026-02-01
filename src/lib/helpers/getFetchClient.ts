@@ -8,6 +8,39 @@ type FetchInitParameterWithClient =
     | RequestInit & { client: Deno.HttpClient };
 type FetchReturn = ReturnType<typeof fetch>;
 
+// Cache clients per configuration
+const clientCache = new Map<string, Deno.HttpClient>();
+
+function getOrCreateClient(
+    proxyAddress?: string,
+    ipv6Block?: string,
+): Deno.HttpClient | undefined {
+    if (!proxyAddress && !ipv6Block) return undefined;
+
+    // Create a cache key from config
+    const cacheKey = `${proxyAddress}|${ipv6Block}`;
+    
+    if (clientCache.has(cacheKey)) {
+        return clientCache.get(cacheKey)!;
+    }
+
+    const clientOptions: Deno.CreateHttpClientOptions = {};
+    
+    if (proxyAddress) {
+        clientOptions.proxy = { url: proxyAddress };
+    }
+    
+    // Note: IPv6 rotation per-request is tricky with pooling
+    // Consider if you really need this with a proxy
+    if (ipv6Block) {
+        clientOptions.localAddress = generateRandomIPv6(ipv6Block);
+    }
+
+    const client = Deno.createHttpClient(clientOptions);
+    clientCache.set(cacheKey, client);
+    return client;
+}
+
 export const getFetchClient = (config: Config): {
     (
         input: FetchInputParameter,
@@ -17,42 +50,20 @@ export const getFetchClient = (config: Config): {
     const proxyAddress = config.networking.proxy;
     const ipv6Block = config.networking.ipv6_block;
 
-    // If proxy or IPv6 rotation is configured, create a custom HTTP client
-    // IPv6 rotation generates a unique localAddress for each request to help
-    // avoid YouTube's "Please login" errors
-    if (proxyAddress || ipv6Block) {
-        return async (
-            input: FetchInputParameter,
-            init?: RequestInit,
-        ) => {
-            const clientOptions: Deno.CreateHttpClientOptions = {};
-
-            if (proxyAddress) {
-                clientOptions.proxy = {
-                    url: proxyAddress,
-                };
-            }
-
-            if (ipv6Block) {
-                clientOptions.localAddress = generateRandomIPv6(ipv6Block);
-            }
-
-            const client = Deno.createHttpClient(clientOptions);
-            const fetchRes = await fetchShim(config, input, {
-                client,
-                headers: init?.headers,
-                method: init?.method,
-                body: init?.body,
-            });
-            return new Response(fetchRes.body, {
-                status: fetchRes.status,
-                headers: fetchRes.headers,
-            });
-        };
-    }
-
-    return (input: FetchInputParameter, init?: FetchInitParameterWithClient) =>
-        fetchShim(config, input, init);
+    return async (
+        input: FetchInputParameter,
+        init?: RequestInit,
+    ) => {
+        const client = getOrCreateClient(proxyAddress, ipv6Block);
+        const fetchRes = await fetchShim(config, input, {
+            ...init,
+            client,
+        });
+        return new Response(fetchRes.body, {
+            status: fetchRes.status,
+            headers: fetchRes.headers,
+        });
+    };
 };
 
 function fetchShim(
@@ -67,6 +78,7 @@ function fetchShim(
         ?.initial_debounce;
     const fetchDebounceMultiplier = config.networking.fetch?.retry
         ?.debounce_multiplier;
+
     const retryOptions: RetryOptions = {
         maxAttempts: fetchMaxAttempts,
         minTimeout: fetchInitialDebounce,
@@ -76,12 +88,19 @@ function fetchShim(
 
     const callFetch = () =>
         fetch(input, {
-            // only set the AbortSignal if the timeout is supplied in the config
             signal: fetchTimeout
                 ? AbortSignal.timeout(Number(fetchTimeout))
-                : null,
+                : undefined, // Use undefined instead of null
             ...(init || {}),
         });
-    // if retry enabled, call retry with the fetch shim, otherwise pass the fetch shim back directly
+
     return fetchRetry ? retry(callFetch, retryOptions) : callFetch();
 }
+
+// Cleanup function - call on application shutdown
+export const closeHttpClients = () => {
+    for (const client of clientCache.values()) {
+        client.close();
+    }
+    clientCache.clear();
+};
