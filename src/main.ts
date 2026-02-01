@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { companionRoutes, miscRoutes } from "./routes/index.ts";
-import { Innertube, Platform } from "youtubei.js";
+import { Innertube, Platform, UniversalCache } from "youtubei.js";
 import { poTokenGenerate, type TokenMinter } from "./lib/jobs/potoken.ts";
 import { USER_AGENT } from "bgutils";
 import { retry } from "@std/async";
@@ -74,6 +74,7 @@ if (!innertubeClientOauthEnabled) {
 Platform.shim.eval = jsInterpreter;
 console.log("[INFO] CREATING INNERTUBE CLIENT.");
 innertubeClient = await Innertube.create({
+    cache: new UniversalCache(true),
     enable_session_cache: false,
     retrieve_player: innertubeClientFetchPlayer,
     fetch: getFetchClient(config),
@@ -123,6 +124,7 @@ if (!innertubeClientOauthEnabled) {
                 }
             } else {
                 innertubeClient = await Innertube.create({
+                    cache: new UniversalCache(true),
                     enable_session_cache: false,
                     fetch: getFetchClient(config),
                     retrieve_player: innertubeClientFetchPlayer,
