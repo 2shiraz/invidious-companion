@@ -26,7 +26,7 @@ export const youtubePlayerParsing = async ({
     config,
     tokenMinter,
     metrics,
-    overrideCache = false,
+    overrideCache = true,
 }: {
     innertubeClient: Innertube;
     videoId: string;
