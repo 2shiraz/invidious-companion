@@ -4,103 +4,124 @@ import { generateRandomIPv6 } from "./ipv6Rotation.ts";
 
 type FetchInputParameter = Parameters<typeof fetch>[0];
 type FetchInitParameterWithClient =
-    | RequestInit
-    | RequestInit & { client: Deno.HttpClient };
+  | RequestInit
+  | (RequestInit & { client: Deno.HttpClient });
 type FetchReturn = ReturnType<typeof fetch>;
 
-// Cache clients per configuration
-const clientCache = new Map<string, Deno.HttpClient>();
+// Cache only proxy-only clients.
+// If ipv6Block is enabled, create a fresh client per request
+// so a new random IPv6 is used every time.
+const proxyClientCache = new Map<string, Deno.HttpClient>();
 
 function getOrCreateClient(
-    proxyAddress?: string,
-    ipv6Block?: string,
-): Deno.HttpClient | undefined {
-    if (!proxyAddress && !ipv6Block) return undefined;
+  proxyAddress?: string,
+  ipv6Block?: string,
+): { client?: Deno.HttpClient; shouldClose: boolean } {
+  if (!proxyAddress && !ipv6Block) {
+    return { client: undefined, shouldClose: false };
+  }
 
-    // Create a cache key from config
-    const cacheKey = `${proxyAddress}|${ipv6Block}`;
-    
-    if (clientCache.has(cacheKey)) {
-        return clientCache.get(cacheKey)!;
-    }
+  const clientOptions: Deno.CreateHttpClientOptions = {};
 
-    const clientOptions: Deno.CreateHttpClientOptions = {};
-    
-    if (proxyAddress) {
-        clientOptions.proxy = { url: proxyAddress };
-    }
-    
-    // Note: IPv6 rotation per-request is tricky with pooling
-    // Consider if you really need this with a proxy
-    if (ipv6Block) {
-        clientOptions.localAddress = generateRandomIPv6(ipv6Block);
-    }
+  if (proxyAddress) {
+    clientOptions.proxy = { url: proxyAddress };
+  }
 
-    const client = Deno.createHttpClient(clientOptions);
-    clientCache.set(cacheKey, client);
-    return client;
+  // Fresh client per request when rotating IPv6
+  if (ipv6Block) {
+    clientOptions.localAddress = generateRandomIPv6(ipv6Block);
+    return {
+      client: Deno.createHttpClient(clientOptions),
+      shouldClose: true,
+    };
+  }
+
+  // Reuse cached proxy-only client
+  const cacheKey = proxyAddress!;
+  const cachedClient = proxyClientCache.get(cacheKey);
+  if (cachedClient) {
+    return { client: cachedClient, shouldClose: false };
+  }
+
+  const client = Deno.createHttpClient(clientOptions);
+  proxyClientCache.set(cacheKey, client);
+
+  return { client, shouldClose: false };
 }
 
-export const getFetchClient = (config: Config): {
-    (
-        input: FetchInputParameter,
-        init?: FetchInitParameterWithClient,
-    ): FetchReturn;
+export const getFetchClient = (
+  config: Config,
+): {
+  (
+    input: FetchInputParameter,
+    init?: FetchInitParameterWithClient,
+  ): FetchReturn;
 } => {
-    const proxyAddress = config.networking.proxy;
-    const ipv6Block = config.networking.ipv6_block;
+  const proxyAddress = config.networking.proxy;
+  const ipv6Block = config.networking.ipv6_block;
 
-    return async (
-        input: FetchInputParameter,
-        init?: RequestInit,
-    ) => {
-        const client = getOrCreateClient(proxyAddress, ipv6Block);
-        const fetchRes = await fetchShim(config, input, {
-            ...init,
-            client,
-        });
-        return new Response(fetchRes.body, {
-            status: fetchRes.status,
-            headers: fetchRes.headers,
-        });
-    };
+  return async (
+    input: FetchInputParameter,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const { client, shouldClose } = getOrCreateClient(proxyAddress, ipv6Block);
+
+    try {
+      return await fetchShim(config, input, {
+        ...init,
+        ...(client ? { client } : {}),
+      });
+    } finally {
+      if (shouldClose) {
+        try {
+          client?.close();
+        } catch {
+          // ignore close errors
+        }
+      }
+    }
+  };
 };
 
 function fetchShim(
-    config: Config,
-    input: FetchInputParameter,
-    init?: FetchInitParameterWithClient,
+  config: Config,
+  input: FetchInputParameter,
+  init?: FetchInitParameterWithClient,
 ): FetchReturn {
-    const fetchTimeout = config.networking.fetch?.timeout_ms;
-    const fetchRetry = config.networking.fetch?.retry?.enabled;
-    const fetchMaxAttempts = config.networking.fetch?.retry?.times;
-    const fetchInitialDebounce = config.networking.fetch?.retry
-        ?.initial_debounce;
-    const fetchDebounceMultiplier = config.networking.fetch?.retry
-        ?.debounce_multiplier;
+  const fetchTimeout = config.networking.fetch?.timeout_ms;
+  const fetchRetry = config.networking.fetch?.retry?.enabled;
+  const fetchMaxAttempts = config.networking.fetch?.retry?.times;
+  const fetchInitialDebounce =
+    config.networking.fetch?.retry?.initial_debounce;
+  const fetchDebounceMultiplier =
+    config.networking.fetch?.retry?.debounce_multiplier;
 
-    const retryOptions: RetryOptions = {
-        maxAttempts: fetchMaxAttempts,
-        minTimeout: fetchInitialDebounce,
-        multiplier: fetchDebounceMultiplier,
-        jitter: 0,
-    };
+  const retryOptions: RetryOptions = {
+    maxAttempts: fetchMaxAttempts,
+    minTimeout: fetchInitialDebounce,
+    multiplier: fetchDebounceMultiplier,
+    jitter: 0,
+  };
 
-    const callFetch = () =>
-        fetch(input, {
-            signal: fetchTimeout
-                ? AbortSignal.timeout(Number(fetchTimeout))
-                : undefined, // Use undefined instead of null
-            ...(init || {}),
-        });
+  const callFetch = () =>
+    fetch(input, {
+      signal: fetchTimeout
+        ? AbortSignal.timeout(Number(fetchTimeout))
+        : undefined,
+      ...(init ?? {}),
+    });
 
-    return fetchRetry ? retry(callFetch, retryOptions) : callFetch();
+  return fetchRetry ? retry(callFetch, retryOptions) : callFetch();
 }
 
 // Cleanup function - call on application shutdown
 export const closeHttpClients = () => {
-    for (const client of clientCache.values()) {
-        client.close();
+  for (const client of proxyClientCache.values()) {
+    try {
+      client.close();
+    } catch {
+      // ignore already-closed client errors
     }
-    clientCache.clear();
+  }
+  proxyClientCache.clear();
 };
