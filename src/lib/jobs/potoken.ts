@@ -5,6 +5,7 @@ import {
 } from "../helpers/youtubePlayerHandling.ts";
 import type { Config } from "../helpers/config.ts";
 import { Metrics } from "../helpers/metrics.ts";
+import { logTiming, nowMs } from "../helpers/debugTiming.ts";
 let getFetchClientLocation = "getFetchClient";
 if (Deno.env.get("GET_FETCH_CLIENT_LOCATION")) {
     if (Deno.env.has("DENO_COMPILED")) {
@@ -29,6 +30,7 @@ const workers: TokenGeneratorWorker[] = [];
 
 function createMinter(worker: TokenGeneratorWorker) {
     return (videoId: string): Promise<string> => {
+        const startMs = nowMs();
         const { promise, resolve } = Promise.withResolvers<string>();
         // generate a UUID to identify the request as many minter calls
         // may be made within a timespan, and this function will be
@@ -41,6 +43,7 @@ function createMinter(worker: TokenGeneratorWorker) {
                 parsedMessage.requestId === requestId
             ) {
                 worker.removeEventListener("message", listener);
+                logTiming("worker content-token request", startMs, { videoId });
                 resolve(parsedMessage.contentToken);
             }
         };

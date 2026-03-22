@@ -1,20 +1,21 @@
-import { ApiResponse, Innertube, Constants } from "youtubei.js";
-import { UmpReader, CompositeBuffer } from "googlevideo/ump";
+import { ApiResponse, Constants, Innertube } from "youtubei.js";
+import { CompositeBuffer, UmpReader } from "googlevideo/ump";
 import {
-    UMPPartId,
-    OnesieInnertubeRequest,
-    OnesieHeader,
-    SabrError,
-    OnesieProxyStatus,
-    OnesieInnertubeResponse,
-    OnesieRequest,
     CompressionType,
+    OnesieHeader,
     OnesieHeaderType,
+    OnesieInnertubeRequest,
+    OnesieInnertubeResponse,
+    OnesieProxyStatus,
+    OnesieRequest,
+    SabrError,
+    UMPPartId,
 } from "googlevideo/protos";
 import { base64ToU8 } from "googlevideo/utils";
 import type { TokenMinter } from "../jobs/potoken.ts";
 import type { Config } from "./config.ts";
 import { getFetchClient } from "./getFetchClient.ts";
+import { logTiming, nowMs, withTiming } from "./debugTiming.ts";
 
 const enableCompression = true;
 
@@ -115,26 +116,40 @@ async function decryptResponse(
 }
 
 async function getYouTubeTVClientConfig(fetchImpl: typeof fetch) {
-    const tvConfigResponse = await fetchImpl(
-        "https://www.youtube.com/tv_config?action_get_config=true&client=lb4&theme=cl",
+    const tvConfigUrl =
+        "https://www.youtube.com/tv_config?action_get_config=true&client=lb4&theme=cl";
+    const tvConfigResponse = await withTiming(
+        "youtube tv_config fetch",
+        () =>
+            fetchImpl(tvConfigUrl, {
+                method: "GET",
+                headers: {
+                    "User-Agent":
+                        "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version",
+                },
+            }),
         {
-            method: "GET",
-            headers: {
-                "User-Agent": "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version",
-            },
+            endpoint: "tv_config",
+            url: tvConfigUrl,
         },
     );
 
-    const tvConfig = await tvConfigResponse.text();
+    const tvConfig = await withTiming(
+        "youtube tv_config body",
+        () => tvConfigResponse.text(),
+        {
+            endpoint: "tv_config",
+            url: tvConfigUrl,
+        },
+    );
     if (!tvConfig.startsWith(")]}")) {
         throw new Error("Invalid response from YouTube TV config endpoint.");
     }
 
     const tvConfigJson = JSON.parse(tvConfig.slice(4));
 
-    const webPlayerContextConfig =
-        tvConfigJson.webPlayerContextConfig
-            .WEB_PLAYER_CONTEXT_CONFIG_ID_LIVING_ROOM_WATCH;
+    const webPlayerContextConfig = tvConfigJson.webPlayerContextConfig
+        .WEB_PLAYER_CONTEXT_CONFIG_ID_LIVING_ROOM_WATCH;
     const onesieHotConfig = webPlayerContextConfig.onesieHotConfig;
 
     const clientKeyData = base64ToU8(onesieHotConfig.clientKey);
@@ -171,8 +186,7 @@ async function prepareOnesieRequest(
         clientConfig;
     const clonedInnerTubeContext = structuredClone(innertube.session.context);
 
-    clonedInnerTubeContext.client.clientName =
-        Constants.CLIENTS.TV_SIMPLY.NAME;
+    clonedInnerTubeContext.client.clientName = Constants.CLIENTS.TV_SIMPLY.NAME;
     clonedInnerTubeContext.client.clientVersion =
         Constants.CLIENTS.TV_SIMPLY.VERSION;
 
@@ -185,11 +199,12 @@ async function prepareOnesieRequest(
                 vis: 0,
                 splay: false,
                 lactMilliseconds: "-1",
-                signatureTimestamp: innertube.session.player?.signature_timestamp,
+                signatureTimestamp: innertube.session.player
+                    ?.signature_timestamp,
             },
         },
-        contentCheckOk: true,
-        racyCheckOk: true,
+        //contentCheckOk: true,
+        //racyCheckOk: true,
         videoId,
     };
 
@@ -217,8 +232,7 @@ async function prepareOnesieRequest(
     ];
 
     const onesieInnertubeRequest = OnesieInnertubeRequest.encode({
-        url:
-            "https://youtubei.googleapis.com/youtubei/v1/player?key=AIzaSyDCU8hByM-4DrUqRUYnGn-3llEO78bcxq8",
+        url: "https://youtubei.googleapis.com/youtubei/v1/player?key=AIzaSyDCU8hByM-4DrUqRUYnGn-3llEO78bcxq8",
         headers,
         body: JSON.stringify(playerRequestJson),
         proxiedByTrustedBandaid: true,
@@ -280,28 +294,44 @@ async function getBasicInfo(
     poToken: string | undefined,
     fetchImpl: typeof fetch,
 ): Promise<ApiResponse> {
-    const redirectorResponse = await fetchImpl(
+    const redirectorUrl =
         "https://redirector.googlevideo.com/initplayback?source=youtube&itag=0&pvi=0&pai=0&owc=yes&cmo:sensitive_content=yes&alr=yes&id=" +
-            Math.round(Math.random() * 1e5),
-        { method: "GET" },
+        Math.round(Math.random() * 1e5);
+    const redirectorResponse = await withTiming(
+        "youtube redirector initplayback fetch",
+        () => fetchImpl(redirectorUrl, { method: "GET" }),
+        {
+            videoId,
+            url: redirectorUrl,
+        },
     );
+    const redirectorTextStartMs = nowMs();
     const redirectorResponseUrl = await redirectorResponse.text();
+    logTiming("youtube redirector initplayback body", redirectorTextStartMs, {
+        videoId,
+        url: redirectorUrl,
+    });
     if (!redirectorResponseUrl.startsWith("https://")) {
         throw new Error("Invalid redirector response");
     }
 
     const clientConfig = await getYouTubeTVClientConfig(fetchImpl);
 
-    const onesieRequest = await prepareOnesieRequest({
-        videoId,
-        poToken,
-        clientConfig,
-        innertube,
-    });
+    const onesieRequest = await withTiming(
+        "youtube prepare onesie request",
+        () =>
+            prepareOnesieRequest({
+                videoId,
+                poToken,
+                clientConfig,
+                innertube,
+            }),
+        { videoId },
+    );
 
-    let url = `${redirectorResponseUrl.split("/initplayback")[0]}${
-        clientConfig.baseUrl
-    }`;
+    let url = `${
+        redirectorResponseUrl.split("/initplayback")[0]
+    }${clientConfig.baseUrl}`;
 
     const queryParams = [];
     queryParams.push(`id=${onesieRequest.encodedVideoId}`);
@@ -313,17 +343,29 @@ async function getBasicInfo(
 
     url += `&${queryParams.join("&")}`;
 
-    const response = await fetchImpl(url, {
-        method: "POST",
-        headers: {
-            "accept": "*/*",
-            "content-type": "application/octet-stream",
-        },
-        referrer: "https://www.youtube.com/",
-        body: onesieRequest.body,
+    const response = await withTiming(
+        "youtube onesie POST fetch",
+        () =>
+            fetchImpl(url, {
+                method: "POST",
+                headers: {
+                    "accept": "*/*",
+                    "content-type": "application/octet-stream",
+                },
+                referrer: "https://www.youtube.com/",
+                body: onesieRequest.body,
+            }),
+        { videoId },
+    );
+
+    const arrayBufferStartMs = nowMs();
+    const arrayBuffer = await response.arrayBuffer();
+    logTiming("youtube onesie response body", arrayBufferStartMs, {
+        videoId,
+        bytes: arrayBuffer.byteLength,
     });
 
-    const arrayBuffer = await response.arrayBuffer();
+    const parseStartMs = nowMs();
     const googUmp = new UmpReader(
         new CompositeBuffer([new Uint8Array(arrayBuffer)]),
     );
@@ -363,6 +405,8 @@ async function getBasicInfo(
         if (handler) handler(part);
     });
 
+    logTiming("youtube onesie parse ump", parseStartMs, { videoId });
+
     const onesiePlayerResponse = onesie.find((header) =>
         header.type === OnesieHeaderType.ONESIE_PLAYER_RESPONSE
     );
@@ -385,13 +429,27 @@ async function getBasicInfo(
         onesiePlayerResponse.cryptoParams.compressionType ===
             CompressionType.GZIP
     ) {
-        responseData = await decompressGzip(responseData);
+        responseData = await withTiming(
+            "youtube onesie gunzip",
+            () => decompressGzip(responseData),
+            { videoId },
+        );
     }
 
+    const decryptStartMs = nowMs();
     const decryptedData = hmac?.length && iv?.length
-        ? await decryptResponse(iv, hmac, responseData, clientConfig.clientKeyData)
+        ? await decryptResponse(
+            iv,
+            hmac,
+            responseData,
+            clientConfig.clientKeyData,
+        )
         : responseData;
+    logTiming("youtube onesie decrypt", decryptStartMs, { videoId });
+
+    const decodeStartMs = nowMs();
     const decoded = OnesieInnertubeResponse.decode(decryptedData);
+    logTiming("youtube onesie decode proto", decodeStartMs, { videoId });
 
     if (decoded.onesieProxyStatus !== OnesieProxyStatus.OK) {
         throw new Error("Onesie proxy status not OK");
@@ -401,10 +459,14 @@ async function getBasicInfo(
         throw new Error("Http status not OK");
     }
 
+    const jsonStartMs = nowMs();
+    const data = JSON.parse(new TextDecoder().decode(decoded.body));
+    logTiming("youtube onesie decode json", jsonStartMs, { videoId });
+
     return {
         success: true,
         status_code: 200,
-        data: JSON.parse(new TextDecoder().decode(decoded.body)),
+        data,
     };
 }
 
@@ -414,15 +476,19 @@ export const youtubePlayerReq = async (
     config: Config,
     tokenMinter: TokenMinter,
 ): Promise<ApiResponse> => {
+    const tokenStartMs = nowMs();
     const contentPoToken = await tokenMinter(videoId);
+    logTiming("youtube content PO token", tokenStartMs, { videoId });
     const fetchImpl = getFetchClient(config);
 
-    const res =  await getBasicInfo(
+    const getBasicInfoStartMs = nowMs();
+    const res = await getBasicInfo(
         innertubeClient,
         videoId,
         contentPoToken,
         fetchImpl,
     );
+    logTiming("youtube getBasicInfo total", getBasicInfoStartMs, { videoId });
 
     return res;
 };

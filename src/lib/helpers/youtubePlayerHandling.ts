@@ -50,7 +50,7 @@ export const youtubePlayerParsing = async ({
             tokenMinter,
         );
         const videoData = youtubePlayerResponse.data;
-        
+
         if (videoData.playabilityStatus.status === "ERROR") {
             return videoData;
         }
