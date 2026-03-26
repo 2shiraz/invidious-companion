@@ -17,6 +17,28 @@ import type { Config } from "./config.ts";
 import { getFetchClient } from "./getFetchClient.ts";
 
 const enableCompression = true;
+const TV_CONFIG_CACHE_TTL_MS = 15 * 60 * 1000;
+const REDIRECTOR_CACHE_TTL_MS = 15 * 60 * 1000;
+
+type CacheEntry<T> = {
+    expiresAt: number;
+    value: T;
+};
+
+type YouTubeTVClientConfig = Awaited<ReturnType<typeof getYouTubeTVClientConfig>>;
+
+let cachedYouTubeTVClientConfig: CacheEntry<YouTubeTVClientConfig> | undefined;
+let cachedYouTubeTVClientConfigPromise: Promise<YouTubeTVClientConfig> | undefined;
+let cachedRedirectorBaseUrl: CacheEntry<string> | undefined;
+let cachedRedirectorBaseUrlPromise: Promise<string> | undefined;
+
+function getCachedValue<T>(cacheEntry: CacheEntry<T> | undefined): T | undefined {
+    if (!cacheEntry || cacheEntry.expiresAt <= Date.now()) {
+        return undefined;
+    }
+
+    return cacheEntry.value;
+}
 
 async function encryptRequest(
     clientKey: Uint8Array,
@@ -152,6 +174,64 @@ async function getYouTubeTVClientConfig(fetchImpl: typeof fetch) {
     };
 }
 
+async function getCachedYouTubeTVClientConfig(
+    fetchImpl: typeof fetch,
+): Promise<YouTubeTVClientConfig> {
+    const cachedValue = getCachedValue(cachedYouTubeTVClientConfig);
+    if (cachedValue) {
+        return cachedValue;
+    }
+
+    if (!cachedYouTubeTVClientConfigPromise) {
+        cachedYouTubeTVClientConfigPromise = getYouTubeTVClientConfig(fetchImpl)
+            .then((value) => {
+                cachedYouTubeTVClientConfig = {
+                    value,
+                    expiresAt: Date.now() + TV_CONFIG_CACHE_TTL_MS,
+                };
+                return value;
+            })
+            .finally(() => {
+                cachedYouTubeTVClientConfigPromise = undefined;
+            });
+    }
+
+    return await cachedYouTubeTVClientConfigPromise;
+}
+
+async function getRedirectorBaseUrl(fetchImpl: typeof fetch): Promise<string> {
+    const cachedValue = getCachedValue(cachedRedirectorBaseUrl);
+    if (cachedValue) {
+        return cachedValue;
+    }
+
+    if (!cachedRedirectorBaseUrlPromise) {
+        cachedRedirectorBaseUrlPromise = fetchImpl(
+            "https://redirector.googlevideo.com/initplayback?source=youtube&itag=0&pvi=0&pai=0&owc=yes&cmo:sensitive_content=yes&alr=yes&id=" +
+                Math.round(Math.random() * 1e5),
+            { method: "GET" },
+        )
+            .then((response) => response.text())
+            .then((responseUrl) => {
+                if (!responseUrl.startsWith("https://")) {
+                    throw new Error("Invalid redirector response");
+                }
+
+                const baseUrl = responseUrl.split("/initplayback")[0];
+                cachedRedirectorBaseUrl = {
+                    value: baseUrl,
+                    expiresAt: Date.now() + REDIRECTOR_CACHE_TTL_MS,
+                };
+                return baseUrl;
+            })
+            .finally(() => {
+                cachedRedirectorBaseUrlPromise = undefined;
+            });
+    }
+
+    return await cachedRedirectorBaseUrlPromise;
+}
+
 async function prepareOnesieRequest(
     {
         videoId,
@@ -280,17 +360,8 @@ async function getBasicInfo(
     poToken: string | undefined,
     fetchImpl: typeof fetch,
 ): Promise<ApiResponse> {
-    const redirectorResponse = await fetchImpl(
-        "https://redirector.googlevideo.com/initplayback?source=youtube&itag=0&pvi=0&pai=0&owc=yes&cmo:sensitive_content=yes&alr=yes&id=" +
-            Math.round(Math.random() * 1e5),
-        { method: "GET" },
-    );
-    const redirectorResponseUrl = await redirectorResponse.text();
-    if (!redirectorResponseUrl.startsWith("https://")) {
-        throw new Error("Invalid redirector response");
-    }
-
-    const clientConfig = await getYouTubeTVClientConfig(fetchImpl);
+    const redirectorBaseUrl = await getRedirectorBaseUrl(fetchImpl);
+    const clientConfig = await getCachedYouTubeTVClientConfig(fetchImpl);
 
     const onesieRequest = await prepareOnesieRequest({
         videoId,
@@ -299,9 +370,7 @@ async function getBasicInfo(
         innertube,
     });
 
-    let url = `${redirectorResponseUrl.split("/initplayback")[0]}${
-        clientConfig.baseUrl
-    }`;
+    let url = `${redirectorBaseUrl}${clientConfig.baseUrl}`;
 
     const queryParams = [];
     queryParams.push(`id=${onesieRequest.encodedVideoId}`);
@@ -417,7 +486,7 @@ export const youtubePlayerReq = async (
     const contentPoToken = await tokenMinter(videoId);
     const fetchImpl = getFetchClient(config);
 
-    const res =  await getBasicInfo(
+    const res = await getBasicInfo(
         innertubeClient,
         videoId,
         contentPoToken,

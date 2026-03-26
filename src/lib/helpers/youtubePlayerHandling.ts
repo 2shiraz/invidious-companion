@@ -19,6 +19,7 @@ const { youtubePlayerReq } = await import(youtubePlayerReqLocation);
 import type { Config } from "./config.ts";
 
 const kv = await Deno.openKv();
+const PLAYER_CACHE_TTL_MS = 60 * 60 * 1000;
 
 export const youtubePlayerParsing = async ({
     innertubeClient,
@@ -35,7 +36,7 @@ export const youtubePlayerParsing = async ({
     metrics: Metrics | undefined;
     overrideCache?: boolean;
 }): Promise<object> => {
-    const cacheEnabled = overrideCache ? false : config.cache.enabled;
+    const cacheEnabled = overrideCache !== true && config.cache.enabled;
 
     const videoCached = (await kv.get(["video_cache", videoId]))
         .value as Uint8Array;
@@ -165,7 +166,7 @@ export const youtubePlayerParsing = async ({
                             ),
                         ),
                         {
-                            expireIn: 1000 * 60 * 60,
+                            expireIn: PLAYER_CACHE_TTL_MS,
                         },
                     );
                 })();
