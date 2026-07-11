@@ -15,6 +15,7 @@ import { base64ToU8 } from "googlevideo/utils";
 import type { TokenMinter } from "../jobs/potoken.ts";
 import type { Config } from "./config.ts";
 import { getFetchClient } from "./getFetchClient.ts";
+import { isDeadCdnError, isDeadCdnHostname } from "./deadCdnRegistry.ts";
 
 const enableCompression = true;
 const TV_CONFIG_CACHE_TTL_MS = 15 * 60 * 1000;
@@ -201,7 +202,7 @@ async function getCachedYouTubeTVClientConfig(
 
 async function getRedirectorBaseUrl(fetchImpl: typeof fetch): Promise<string> {
     const cachedValue = getCachedValue(cachedRedirectorBaseUrl);
-    if (cachedValue) {
+    if (cachedValue && !isDeadCdnHostname(cachedValue)) {
         return cachedValue;
     }
 
@@ -230,6 +231,13 @@ async function getRedirectorBaseUrl(fetchImpl: typeof fetch): Promise<string> {
     }
 
     return await cachedRedirectorBaseUrlPromise;
+}
+
+// drops the cached redirector assignment so the next getRedirectorBaseUrl() call
+// re-resolves against redirector.googlevideo.com instead of reusing a dead node
+// for the rest of REDIRECTOR_CACHE_TTL_MS
+function invalidateRedirectorBaseUrlCache(): void {
+    cachedRedirectorBaseUrl = undefined;
 }
 
 async function prepareOnesieRequest(
@@ -360,7 +368,6 @@ async function getBasicInfo(
     poToken: string | undefined,
     fetchImpl: typeof fetch,
 ): Promise<ApiResponse> {
-    const redirectorBaseUrl = await getRedirectorBaseUrl(fetchImpl);
     const clientConfig = await getCachedYouTubeTVClientConfig(fetchImpl);
 
     const onesieRequest = await prepareOnesieRequest({
@@ -370,9 +377,7 @@ async function getBasicInfo(
         innertube,
     });
 
-    let url = `${redirectorBaseUrl}${clientConfig.baseUrl}`;
-
-    const queryParams = [];
+    const queryParams: string[] = [];
     queryParams.push(`id=${onesieRequest.encodedVideoId}`);
     queryParams.push("cmo:sensitive_content=yes");
     queryParams.push("opr=1");
@@ -380,9 +385,10 @@ async function getBasicInfo(
     queryParams.push("por=1");
     queryParams.push("rn=0");
 
-    url += `&${queryParams.join("&")}`;
+    const buildUrl = (redirectorBaseUrl: string) =>
+        `${redirectorBaseUrl}${clientConfig.baseUrl}&${queryParams.join("&")}`;
 
-    const response = await fetchImpl(url, {
+    const requestInit: RequestInit = {
         method: "POST",
         headers: {
             "accept": "*/*",
@@ -390,7 +396,18 @@ async function getBasicInfo(
         },
         referrer: "https://www.youtube.com/",
         body: onesieRequest.body,
-    });
+    };
+
+    let response: Response;
+    try {
+        response = await fetchImpl(buildUrl(await getRedirectorBaseUrl(fetchImpl)), requestInit);
+    } catch (err) {
+        if (!isDeadCdnError(err)) throw err;
+
+        // the assigned edge node is dead — drop it and get reassigned once before giving up
+        invalidateRedirectorBaseUrlCache();
+        response = await fetchImpl(buildUrl(await getRedirectorBaseUrl(fetchImpl)), requestInit);
+    }
 
     const arrayBuffer = await response.arrayBuffer();
     const googUmp = new UmpReader(
