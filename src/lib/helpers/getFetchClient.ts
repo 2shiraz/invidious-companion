@@ -7,6 +7,9 @@ type FetchInitParameterWithClient =
     | RequestInit
     | RequestInit & { client: Deno.HttpClient };
 type FetchReturn = ReturnType<typeof fetch>;
+type FetchClientOptions = {
+    proxySessionId?: string;
+};
 
 // Cache clients per configuration
 const clientCache = new Map<string, Deno.HttpClient>();
@@ -41,14 +44,34 @@ function getOrCreateClient(
     return client;
 }
 
-export const getFetchClient = (config: Config): {
+function getStickyProxyAddress(
+    proxyAddress: string | null,
+    proxySessionId?: string,
+): string | undefined {
+    if (!proxyAddress) return undefined;
+    if (!proxySessionId) return proxyAddress;
+
+    const proxyUrl = new URL(proxyAddress);
+    if (!proxyUrl.username) return proxyAddress;
+
+    proxyUrl.username = `${proxySessionId}__${proxyUrl.username}`;
+    return proxyUrl.toString();
+}
+
+export const getFetchClient = (
+    config: Config,
+    options: FetchClientOptions = {},
+): {
     (
         input: FetchInputParameter,
         init?: FetchInitParameterWithClient,
     ): FetchReturn;
 } => {
-    const proxyAddress = config.networking.proxy;
-    const ipv6Block = config.networking.ipv6_block;
+    const proxyAddress = getStickyProxyAddress(
+        config.networking.proxy,
+        options.proxySessionId,
+    );
+    const ipv6Block = config.networking.ipv6_block ?? undefined;
 
     return async (
         input: FetchInputParameter,

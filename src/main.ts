@@ -3,7 +3,6 @@ import { companionRoutes, miscRoutes } from "./routes/index.ts";
 import { Innertube, Platform, UniversalCache } from "youtubei.js";
 import { poTokenGenerate, type TokenMinter } from "./lib/jobs/potoken.ts";
 import { USER_AGENT } from "bgutils";
-import { retry } from "@std/async";
 import type { HonoVariables } from "./lib/types/HonoVariables.ts";
 import { parseArgs } from "@std/cli/parse-args";
 import { existsSync } from "@std/fs/exists";
@@ -46,6 +45,7 @@ const companionApp = new Hono({
     getPath: (req) => new URL(req.url).pathname,
 }).basePath(config.server.base_path);
 const metrics = config.server.enable_metrics ? new Metrics() : undefined;
+const INNERTUBE_REFRESH_INTERVAL_MS = 5_000;
 
 let tokenMinter: TokenMinter | undefined;
 let innertubeClient: Innertube;
@@ -54,12 +54,22 @@ const innertubeClientOauthEnabled = config.youtube_session.oauth_enabled;
 const innertubeClientJobPoTokenEnabled =
     config.jobs.youtube_session.po_token_enabled;
 const innertubeClientCookies = config.youtube_session.cookies;
+let refreshInFlight: Promise<void> | undefined;
+let tokenMinterReadyResolved = false;
 
 // Promise that resolves when tokenMinter initialization is complete (for tests)
 let tokenMinterReadyResolve: (() => void) | undefined;
 export const tokenMinterReady = new Promise<void>((resolve) => {
     tokenMinterReadyResolve = resolve;
 });
+
+function resolveTokenMinterReady() {
+    if (!tokenMinterReadyResolved) {
+        tokenMinterReadyResolved = true;
+        tokenMinterReadyResolve?.();
+        tokenMinterReadyResolve = undefined;
+    }
+}
 
 if (!innertubeClientOauthEnabled) {
     if (innertubeClientJobPoTokenEnabled) {
@@ -73,90 +83,109 @@ if (!innertubeClientOauthEnabled) {
 
 Platform.shim.eval = jsInterpreter;
 console.log("[INFO] CREATING INNERTUBE CLIENT.");
-innertubeClient = await Innertube.create({
-    cache: new UniversalCache(true),
-    enable_session_cache: false,
-    retrieve_player: innertubeClientFetchPlayer,
-    fetch: getFetchClient(config),
-    cookie: innertubeClientCookies || undefined,
-    user_agent: USER_AGENT,
-    player_id: PLAYER_ID,
-});
 
-if (!innertubeClientOauthEnabled) {
-    if (innertubeClientJobPoTokenEnabled) {
-        // Initialize tokenMinter in background to not block server startup
-        console.log("[INFO] Starting PO token generation in background...");
-        retry(
-            poTokenGenerate.bind(
-                poTokenGenerate,
-                config,
-                metrics,
-            ),
-            { minTimeout: 1_000, maxTimeout: 60_000, multiplier: 5, jitter: 0 },
-        ).then((result) => {
-            innertubeClient = result.innertubeClient;
-            tokenMinter = result.tokenMinter;
-            tokenMinterReadyResolve?.();
-        }).catch((err) => {
-            console.error("[ERROR] Failed to initialize PO token:", err);
-            metrics?.potokenGenerationFailure.inc();
-            tokenMinterReadyResolve?.();
-        });
-    } else {
-        // If PO token is not enabled, resolve immediately
-        tokenMinterReadyResolve?.();
-    }
-    Deno.cron(
-        "regenerate youtube session",
-        config.jobs.youtube_session.frequency,
-        { backoffSchedule: [5_000, 15_000, 60_000, 180_000] },
-        async () => {
-            if (innertubeClientJobPoTokenEnabled) {
-                try {
-                    ({ innertubeClient, tokenMinter } = await poTokenGenerate(
-                        config,
-                        metrics,
-                    ));
-                } catch (err) {
-                    metrics?.potokenGenerationFailure.inc();
-                    throw err;
-                }
-            } else {
-                innertubeClient = await Innertube.create({
-                    cache: new UniversalCache(true),
-                    enable_session_cache: false,
-                    fetch: getFetchClient(config),
-                    retrieve_player: innertubeClientFetchPlayer,
-                    user_agent: USER_AGENT,
-                    cookie: innertubeClientCookies || undefined,
-                    player_id: PLAYER_ID,
-                });
-            }
-        },
-    );
-} else if (innertubeClientOauthEnabled) {
-    // Fired when waiting for the user to authorize the sign in attempt.
-    innertubeClient.session.on("auth-pending", (data) => {
+async function createInnertubeClient(): Promise<Innertube> {
+    return await Innertube.create({
+        cache: new UniversalCache(true),
+        enable_session_cache: false,
+        retrieve_player: innertubeClientFetchPlayer,
+        fetch: getFetchClient(config),
+        cookie: innertubeClientCookies || undefined,
+        user_agent: USER_AGENT,
+        player_id: PLAYER_ID,
+    });
+}
+
+function registerOauthEventHandlers(client: Innertube) {
+    client.session.on("auth-pending", (data) => {
         console.log(
             `[INFO] [OAUTH] Go to ${data.verification_url} in your browser and enter code ${data.user_code} to authenticate.`,
         );
     });
-    // Fired when authentication is successful.
-    innertubeClient.session.on("auth", () => {
+    client.session.on("auth", () => {
         console.log("[INFO] [OAUTH] Sign in successful!");
     });
-    // Fired when the access token expires.
-    innertubeClient.session.on("update-credentials", async () => {
+    client.session.on("update-credentials", async () => {
         console.log("[INFO] [OAUTH] Credentials updated.");
-        await innertubeClient.session.oauth.cacheCredentials();
+        await client.session.oauth.cacheCredentials();
     });
+}
 
-    // Attempt to sign in and then cache the credentials
+async function createAuthenticatedInnertubeClient(): Promise<Innertube> {
+    const client = await createInnertubeClient();
+    registerOauthEventHandlers(client);
+    await client.session.signIn();
+    await client.session.oauth.cacheCredentials();
+    return client;
+}
+
+async function refreshSharedInnertubeClient(): Promise<void> {
+    if (refreshInFlight) {
+        return await refreshInFlight;
+    }
+
+    refreshInFlight = (async () => {
+        try {
+            if (innertubeClientOauthEnabled) {
+                innertubeClient = await createAuthenticatedInnertubeClient();
+                tokenMinter = undefined;
+            } else if (innertubeClientJobPoTokenEnabled) {
+                ({ innertubeClient, tokenMinter } = await poTokenGenerate(
+                    config,
+                    metrics,
+                ));
+            } else {
+                innertubeClient = await createInnertubeClient();
+                tokenMinter = undefined;
+            }
+
+            console.log("[INFO] Shared Innertube client refreshed.");
+            resolveTokenMinterReady();
+        } catch (err) {
+            console.error("[ERROR] Failed to refresh shared Innertube client:", err);
+            if (innertubeClientJobPoTokenEnabled) {
+                metrics?.potokenGenerationFailure.inc();
+            }
+            resolveTokenMinterReady();
+        } finally {
+            refreshInFlight = undefined;
+        }
+    })();
+
+    return await refreshInFlight;
+}
+
+function startInnertubeRefreshLoop(signal: AbortSignal) {
+    console.log(
+        `[INFO] Starting shared Innertube refresh loop every ${INNERTUBE_REFRESH_INTERVAL_MS}ms.`,
+    );
+    const intervalId = setInterval(() => {
+        void refreshSharedInnertubeClient();
+    }, INNERTUBE_REFRESH_INTERVAL_MS);
+
+    signal.addEventListener(
+        "abort",
+        () => {
+            clearInterval(intervalId);
+        },
+        { once: true },
+    );
+}
+
+innertubeClient = await createInnertubeClient();
+
+if (!innertubeClientOauthEnabled) {
+    if (innertubeClientJobPoTokenEnabled) {
+        console.log("[INFO] Starting PO token generation in background...");
+        void refreshSharedInnertubeClient();
+    } else {
+        resolveTokenMinterReady();
+    }
+} else if (innertubeClientOauthEnabled) {
+    registerOauthEventHandlers(innertubeClient);
     await innertubeClient.session.signIn();
     await innertubeClient.session.oauth.cacheCredentials();
-    // Resolve promise for tests
-    tokenMinterReadyResolve?.();
+    resolveTokenMinterReady();
 }
 
 companionApp.use("*", async (c, next) => {
@@ -181,6 +210,8 @@ app.route("/", companionApp);
 const udsPath = config.server.unix_socket_path;
 
 export function run(signal: AbortSignal, port: number, hostname: string) {
+    startInnertubeRefreshLoop(signal);
+
     if (config.server.use_unix_socket) {
         try {
             if (existsSync(udsPath)) {

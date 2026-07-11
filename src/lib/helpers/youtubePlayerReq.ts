@@ -259,7 +259,7 @@ async function prepareOnesieRequest(
     delete clonedInnerTubeContext.client.configInfo;
 
     const params = {
-        adPlaybackContext: { pyv: true },
+        //adPlaybackContext: { pyv: true },
         playbackContext: {
             contentPlaybackContext: {
                 vis: 0,
@@ -483,13 +483,15 @@ export const youtubePlayerReq = async (
     config: Config,
     tokenMinter: TokenMinter,
 ): Promise<ApiResponse> => {
-    const contentPoToken = await tokenMinter(videoId);
-    const fetchImpl = getFetchClient(config);
+    //const contentPoToken = await tokenMinter(videoId);
+    const fetchImpl = getFetchClient(config, {
+        proxySessionId: videoId,
+    });
 
     const res = await getBasicInfo(
         innertubeClient,
         videoId,
-        contentPoToken,
+        'contentPoToken',
         fetchImpl,
     );
 
