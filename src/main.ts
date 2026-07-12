@@ -34,6 +34,9 @@ if (Deno.env.get("GET_FETCH_CLIENT_LOCATION")) {
 }
 const { getFetchClient } = await import(getFetchClientLocation);
 
+import { startDeadCdnRegistry } from "./lib/helpers/deadCdnRegistry.ts";
+startDeadCdnRegistry();
+
 declare module "hono" {
     interface ContextVariableMap extends HonoVariables {}
 }
