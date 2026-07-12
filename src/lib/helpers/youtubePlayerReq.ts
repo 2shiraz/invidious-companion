@@ -15,7 +15,7 @@ import { base64ToU8 } from "googlevideo/utils";
 import type { TokenMinter } from "../jobs/potoken.ts";
 import type { Config } from "./config.ts";
 import { getFetchClient } from "./getFetchClient.ts";
-import { isDeadCdnError, isDeadCdnHostname } from "./deadCdnRegistry.ts";
+import { isDeadCdnError, isDeadCdnHostname, isDeadCdnStatus } from "./deadCdnRegistry.ts";
 
 const enableCompression = true;
 const TV_CONFIG_CACHE_TTL_MS = 15 * 60 * 1000;
@@ -398,15 +398,29 @@ async function getBasicInfo(
         body: onesieRequest.body,
     };
 
+    const attempt = () =>
+        getRedirectorBaseUrl(fetchImpl).then((redirectorBaseUrl) =>
+            fetchImpl(buildUrl(redirectorBaseUrl), requestInit)
+        );
+
     let response: Response;
+    let retried = false;
     try {
-        response = await fetchImpl(buildUrl(await getRedirectorBaseUrl(fetchImpl)), requestInit);
+        response = await attempt();
     } catch (err) {
         if (!isDeadCdnError(err)) throw err;
 
         // the assigned edge node is dead — drop it and get reassigned once before giving up
         invalidateRedirectorBaseUrlCache();
-        response = await fetchImpl(buildUrl(await getRedirectorBaseUrl(fetchImpl)), requestInit);
+        retried = true;
+        response = await attempt();
+    }
+
+    // some proxies resolve normally with a bad status instead of throwing (e.g. 502/407),
+    // so this can't be caught by the try/catch above — check it separately, same one-retry budget
+    if (!retried && isDeadCdnStatus(response.status)) {
+        invalidateRedirectorBaseUrlCache();
+        response = await attempt();
     }
 
     const arrayBuffer = await response.arrayBuffer();

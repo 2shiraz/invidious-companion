@@ -1,7 +1,7 @@
 import { retry, type RetryOptions } from "@std/async";
 import type { Config } from "./config.ts";
 import { generateRandomIPv6 } from "./ipv6Rotation.ts";
-import { reportDeadCdnIfTimeout } from "./deadCdnRegistry.ts";
+import { reportDeadCdnIfBadStatus, reportDeadCdnIfTimeout } from "./deadCdnRegistry.ts";
 
 type FetchInputParameter = Parameters<typeof fetch>[0];
 type FetchInitParameterWithClient =
@@ -119,6 +119,9 @@ function fetchShim(
         }).catch((err) => {
             reportDeadCdnIfTimeout(input, err);
             throw err;
+        }).then((res) => {
+            reportDeadCdnIfBadStatus(input, res.status);
+            return res;
         });
 
     return fetchRetry ? retry(callFetch, retryOptions) : callFetch();

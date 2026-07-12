@@ -19,21 +19,35 @@ function extractHostname(input: string | URL | Request): string | null {
 // - the request genuinely times out (no response within the configured fetch timeout), or
 // - the proxy tried and failed to open a CONNECT tunnel to the target host itself
 //   ("unsuccessful tunnel") — this means the proxy actually attempted to reach that
-//   specific googlevideo node and couldn't, which is a real signal about that node
-//
-// this deliberately excludes proxy-credential failures ("proxy authentication required"
-// and similar) that fail before the proxy even attempts to reach the target — those
-// reflect the proxy's health, not the CDN node's
+//   specific googlevideo node and couldn't, which is a real signal about that node, or
+// - the proxy returns "proxy authentication required" for this specific destination.
+//   nominally this means bad proxy credentials, but a real credential failure would
+//   fail identically for every destination — if it's repeatedly tied to one specific
+//   googlevideo host, the provider is very likely using 407 loosely for "can't/won't
+//   serve this destination" (blocked exit, no route) rather than a literal auth error
+const PROXY_ERROR_PATTERNS = ["unsuccessful tunnel", "proxy authentication required"];
+
 export function isDeadCdnError(err: unknown): boolean {
     if (err instanceof DOMException && err.name === "TimeoutError") return true;
     if (
         err instanceof TypeError &&
         typeof err.message === "string" &&
-        err.message.includes("unsuccessful tunnel")
+        PROXY_ERROR_PATTERNS.some((pattern) => (err.message as string).includes(pattern))
     ) {
         return true;
     }
     return false;
+}
+
+// 502/503/504 mean the proxy itself responded, but only because it couldn't reach the
+// CDN node behind it — no exception is thrown for this case (fetch resolves normally
+// with a bad status), so it can't be caught by isDeadCdnError and has to be checked
+// separately against the response status. 407 is included for the same reason it's
+// in isDeadCdnError above — see that comment.
+const DEAD_CDN_STATUS_CODES = [502, 503, 504, 407];
+
+export function isDeadCdnStatus(status: number): boolean {
+    return DEAD_CDN_STATUS_CODES.includes(status);
 }
 
 // only specific edge nodes (r1---sn-xxx, r5---sn-xxx, etc.) are reportable/checkable —
@@ -46,15 +60,7 @@ function isEdgeNodeHostname(hostname: string): boolean {
     return EDGE_NODE_HOSTNAME_RE.test(hostname.split(".")[0]);
 }
 
-export function reportDeadCdnIfTimeout(
-    input: string | URL | Request,
-    err: unknown,
-): void {
-    if (!isDeadCdnError(err)) return;
-
-    const hostname = extractHostname(input);
-    if (!hostname || !isEdgeNodeHostname(hostname)) return;
-
+function reportDeadHostname(hostname: string): void {
     const headers: Record<string, string> = {
         "content-type": "application/json",
     };
@@ -66,6 +72,30 @@ export function reportDeadCdnIfTimeout(
         body: JSON.stringify({ hostname }),
         signal: AbortSignal.timeout(REPORT_TIMEOUT_MS),
     }).catch(() => {});
+}
+
+export function reportDeadCdnIfTimeout(
+    input: string | URL | Request,
+    err: unknown,
+): void {
+    if (!isDeadCdnError(err)) return;
+
+    const hostname = extractHostname(input);
+    if (!hostname || !isEdgeNodeHostname(hostname)) return;
+
+    reportDeadHostname(hostname);
+}
+
+export function reportDeadCdnIfBadStatus(
+    input: string | URL | Request,
+    status: number,
+): void {
+    if (!isDeadCdnStatus(status)) return;
+
+    const hostname = extractHostname(input);
+    if (!hostname || !isEdgeNodeHostname(hostname)) return;
+
+    reportDeadHostname(hostname);
 }
 
 // ---- local cache, kept live by a persistent SSE subscription ----
