@@ -94,6 +94,18 @@ export const ConfigSchema = z.object({
                 ),
             }).strict().default({}),
         }).strict().default({}),
+        http_client_cache: z.object({
+            max_size: z.number().int().positive().default(
+                Number(Deno.env.get("NETWORKING_HTTP_CLIENT_CACHE_MAX_SIZE")) ||
+                    128,
+            ),
+            idle_ttl_ms: z.number().int().positive().default(
+                Number(
+                    Deno.env.get("NETWORKING_HTTP_CLIENT_CACHE_IDLE_TTL_MS"),
+                ) ||
+                    30_000,
+            ),
+        }).strict().default({}),
         videoplayback: z.object({
             ump: z.boolean().default(
                 Deno.env.get("NETWORKING_VIDEOPLAYBACK_UMP") === "true" ||

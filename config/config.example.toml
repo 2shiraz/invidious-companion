@@ -63,6 +63,14 @@
 # initial_debounce = 0 # env variable: NETWORKING_FETCH_RETRY_INITIAL_DEBOUNCE
 # # how much to back off after each retry (multiplier of initial_debounce)
 # debounce_multiplier = 0 # env variable: NETWORKING_FETCH_RETRY_DEBOUNCE_MULTIPLIER
+
+###
+# Deno HttpClient cache limits.
+# Needed when sticky proxy sessions create many unique proxy URLs.
+###
+# [networking.http_client_cache]
+# max_size = 128 # env variable: NETWORKING_HTTP_CLIENT_CACHE_MAX_SIZE
+# idle_ttl_ms = 30000 # env variable: NETWORKING_HTTP_CLIENT_CACHE_IDLE_TTL_MS
  
 # [jobs]
  

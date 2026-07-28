@@ -11,28 +11,80 @@ type FetchClientOptions = {
     proxySessionId?: string;
 };
 
-// Cache clients per configuration
-const clientCache = new Map<string, Deno.HttpClient>();
+type CachedClient = {
+    client: Deno.HttpClient;
+    activeRequests: number;
+    lastUsedAt: number;
+};
+
+// Cache clients per effective network configuration. The cache is bounded
+// because sticky proxy sessions create a distinct proxy URL per session id.
+const clientCache = new Map<string, CachedClient>();
+
+function closeClient(client: Deno.HttpClient) {
+    try {
+        client.close();
+    } catch {
+        // Ignore double-close races during shutdown/eviction.
+    }
+}
+
+function evictIdleClients(config: Config, now = Date.now()) {
+    const { max_size, idle_ttl_ms } = config.networking.http_client_cache;
+
+    for (const [cacheKey, cached] of clientCache) {
+        if (
+            cached.activeRequests === 0 &&
+            now - cached.lastUsedAt >= idle_ttl_ms
+        ) {
+            clientCache.delete(cacheKey);
+            closeClient(cached.client);
+        }
+    }
+
+    while (clientCache.size > max_size) {
+        const idleEntry = Array.from(clientCache.entries()).find((
+            [, cached],
+        ) => cached.activeRequests === 0);
+
+        if (!idleEntry) {
+            break;
+        }
+
+        const [cacheKey, cached] = idleEntry;
+        clientCache.delete(cacheKey);
+        closeClient(cached.client);
+    }
+}
 
 function getOrCreateClient(
+    config: Config,
     proxyAddress?: string,
     ipv6Block?: string,
-): Deno.HttpClient | undefined {
+): CachedClient | undefined {
     if (!proxyAddress && !ipv6Block) return undefined;
 
     // Create a cache key from config
     const cacheKey = `${proxyAddress}|${ipv6Block}`;
-    
-    if (clientCache.has(cacheKey)) {
-        return clientCache.get(cacheKey)!;
+    const now = Date.now();
+
+    evictIdleClients(config, now);
+
+    const cachedClient = clientCache.get(cacheKey);
+    if (cachedClient) {
+        cachedClient.activeRequests++;
+        cachedClient.lastUsedAt = now;
+        clientCache.delete(cacheKey);
+        clientCache.set(cacheKey, cachedClient);
+        return cachedClient;
     }
 
     const clientOptions: Deno.CreateHttpClientOptions = {};
-    
+
     if (proxyAddress) {
         clientOptions.proxy = { url: proxyAddress };
     }
-    
+
     // Note: IPv6 rotation per-request is tricky with pooling
     // Consider if you really need this with a proxy
     if (ipv6Block) {
@@ -40,8 +92,16 @@ function getOrCreateClient(
     }
 
     const client = Deno.createHttpClient(clientOptions);
-    clientCache.set(cacheKey, client);
-    return client;
+    const cached = {
+        client,
+        activeRequests: 1,
+        lastUsedAt: now,
+    };
+
+    clientCache.set(cacheKey, cached);
+    evictIdleClients(config, now);
+
+    return cached;
 }
 
 function getStickyProxyAddress(
@@ -54,8 +114,8 @@ function getStickyProxyAddress(
     const proxyUrl = new URL(proxyAddress);
     if (!proxyUrl.username) return proxyAddress;
 
-    //proxyUrl.username = `${proxySessionId}__${proxyUrl.username}`;
-    proxyUrl.username = `${proxyUrl.username}`;
+    proxyUrl.username = `${proxySessionId}__${proxyUrl.username}`;
+    //proxyUrl.username = `${proxyUrl.username}`;
     return proxyUrl.toString();
 }
 
@@ -78,17 +138,76 @@ export const getFetchClient = (
         input: FetchInputParameter,
         init?: RequestInit,
     ) => {
-        const client = getOrCreateClient(proxyAddress, ipv6Block);
-        const fetchRes = await fetchShim(config, input, {
-            ...init,
-            client,
-        });
-        return new Response(fetchRes.body, {
-            status: fetchRes.status,
-            headers: fetchRes.headers,
-        });
+        const cached = getOrCreateClient(config, proxyAddress, ipv6Block);
+        const client = cached?.client;
+
+        try {
+            const fetchRes = await fetchShim(config, input, {
+                ...init,
+                client,
+            });
+
+            return wrapResponse(fetchRes, () => {
+                if (!cached) return;
+                cached.activeRequests--;
+                cached.lastUsedAt = Date.now();
+                evictIdleClients(config);
+            });
+        } catch (err) {
+            if (cached) {
+                cached.activeRequests--;
+                cached.lastUsedAt = Date.now();
+                evictIdleClients(config);
+            }
+            throw err;
+        }
     };
 };
+
+function wrapResponse(response: Response, release: () => void): Response {
+    if (!response.body) {
+        release();
+        return response;
+    }
+
+    let released = false;
+    const releaseOnce = () => {
+        if (!released) {
+            released = true;
+            release();
+        }
+    };
+    const reader = response.body.getReader();
+    const body = new ReadableStream({
+        async pull(controller) {
+            try {
+                const { done, value } = await reader.read();
+                if (done) {
+                    releaseOnce();
+                    controller.close();
+                    return;
+                }
+                controller.enqueue(value);
+            } catch (err) {
+                releaseOnce();
+                controller.error(err);
+            }
+        },
+        async cancel(reason) {
+            try {
+                await reader.cancel(reason);
+            } finally {
+                releaseOnce();
+            }
+        },
+    });
+
+    return new Response(body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+    });
+}
 
 function fetchShim(
     config: Config,
@@ -123,8 +242,8 @@ function fetchShim(
 
 // Cleanup function - call on application shutdown
 export const closeHttpClients = () => {
-    for (const client of clientCache.values()) {
-        client.close();
+    for (const cached of clientCache.values()) {
+        closeClient(cached.client);
     }
     clientCache.clear();
 };

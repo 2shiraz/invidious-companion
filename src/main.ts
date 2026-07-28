@@ -32,7 +32,14 @@ if (Deno.env.get("GET_FETCH_CLIENT_LOCATION")) {
         ) as string;
     }
 }
-const { getFetchClient } = await import(getFetchClientLocation);
+const fetchClientModule: {
+    getFetchClient:
+        typeof import("./lib/helpers/getFetchClient.ts").getFetchClient;
+    closeHttpClients?:
+        typeof import("./lib/helpers/getFetchClient.ts").closeHttpClients;
+} = await import(getFetchClientLocation);
+const { getFetchClient } = fetchClientModule;
+const closeHttpClients = fetchClientModule.closeHttpClients ?? (() => {});
 
 declare module "hono" {
     interface ContextVariableMap extends HonoVariables {}
@@ -142,7 +149,10 @@ async function refreshSharedInnertubeClient(): Promise<void> {
             console.log("[INFO] Shared Innertube client refreshed.");
             resolveTokenMinterReady();
         } catch (err) {
-            console.error("[ERROR] Failed to refresh shared Innertube client:", err);
+            console.error(
+                "[ERROR] Failed to refresh shared Innertube client:",
+                err,
+            );
             if (innertubeClientJobPoTokenEnabled) {
                 metrics?.potokenGenerationFailure.inc();
             }
@@ -211,6 +221,7 @@ const udsPath = config.server.unix_socket_path;
 
 export function run(signal: AbortSignal, port: number, hostname: string) {
     startInnertubeRefreshLoop(signal);
+    signal.addEventListener("abort", closeHttpClients, { once: true });
 
     if (config.server.use_unix_socket) {
         try {
