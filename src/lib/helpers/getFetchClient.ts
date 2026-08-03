@@ -54,8 +54,9 @@ function getStickyProxyAddress(
     const proxyUrl = new URL(proxyAddress);
     if (!proxyUrl.username) return proxyAddress;
 
-    //proxyUrl.username = `${proxySessionId}__${proxyUrl.username}`;
-    proxyUrl.username = `${proxyUrl.username}`;
+    proxyUrl.username = `${proxySessionId}__${proxyUrl.username}`;
+    //console.log(`[INFO] Using sticky proxy username: ${proxyUrl.username}`);
+    //proxyUrl.username = `${proxyUrl.username}`;
     return proxyUrl.toString();
 }
 
