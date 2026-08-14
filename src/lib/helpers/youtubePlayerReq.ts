@@ -18,7 +18,7 @@ import { getFetchClient } from "./getFetchClient.ts";
 
 const enableCompression = true;
 const TV_CONFIG_CACHE_TTL_MS = 15 * 60 * 1000;
-const REDIRECTOR_CACHE_TTL_MS = 15 * 60 * 1000;
+const REDIRECTOR_CACHE_TTL_MS = 5 * 1 * 1000;
 
 type CacheEntry<T> = {
     expiresAt: number;
@@ -252,9 +252,9 @@ async function prepareOnesieRequest(
     const clonedInnerTubeContext = structuredClone(innertube.session.context);
 
     clonedInnerTubeContext.client.clientName =
-        Constants.CLIENTS.ANDROID_VR.NAME;
+        Constants.CLIENTS.VISIONOS.NAME;
     clonedInnerTubeContext.client.clientVersion =
-        Constants.CLIENTS.ANDROID_VR.VERSION;
+        Constants.CLIENTS.VISIONOS.VERSION;
 
     delete clonedInnerTubeContext.client.configInfo;
 
@@ -484,8 +484,9 @@ export const youtubePlayerReq = async (
     tokenMinter: TokenMinter,
 ): Promise<ApiResponse> => {
     //const contentPoToken = await tokenMinter(videoId);
+    const safeProxySessionId = videoId.replaceAll("_", "-");
     const fetchImpl = getFetchClient(config, {
-        proxySessionId: videoId,
+        proxySessionId: safeProxySessionId,
     });
 
     const res = await getBasicInfo(

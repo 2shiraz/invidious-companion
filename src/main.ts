@@ -45,7 +45,7 @@ const companionApp = new Hono({
     getPath: (req) => new URL(req.url).pathname,
 }).basePath(config.server.base_path);
 const metrics = config.server.enable_metrics ? new Metrics() : undefined;
-const INNERTUBE_REFRESH_INTERVAL_MS = 5_000;
+const INNERTUBE_REFRESH_INTERVAL_MS = 3_000;
 
 let tokenMinter: TokenMinter | undefined;
 let innertubeClient: Innertube;
