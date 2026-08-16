@@ -54,6 +54,14 @@ export const ConfigSchema = z.object({
         enable_metrics: z.boolean().default(
             Deno.env.get("SERVER_ENABLE_METRICS") === "true" || false,
         ),
+        // Sets SO_REUSEPORT so multiple processes can share one port
+        // (Linux only). Set automatically for workers spawned by the
+        // built-in multi-instance supervisor (see SERVER_INSTANCE_COUNT in
+        // instanceSupervisor.ts); can also be set manually if you're
+        // running multiple instances behind your own process manager.
+        reuse_port: z.boolean().default(
+            Deno.env.get("SERVER_REUSE_PORT") === "true" || false,
+        ),
     }).strict().default({}),
     cache: z.object({
         enabled: z.boolean().default(

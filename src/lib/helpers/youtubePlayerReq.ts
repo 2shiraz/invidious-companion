@@ -252,9 +252,9 @@ async function prepareOnesieRequest(
     const clonedInnerTubeContext = structuredClone(innertube.session.context);
 
     clonedInnerTubeContext.client.clientName =
-        Constants.CLIENTS.VISIONOS.NAME;
+        Constants.CLIENTS.TV_SIMPLY.NAME;
     clonedInnerTubeContext.client.clientVersion =
-        Constants.CLIENTS.VISIONOS.VERSION;
+        Constants.CLIENTS.TV_SIMPLY.VERSION;
 
     delete clonedInnerTubeContext.client.configInfo;
 
@@ -483,7 +483,7 @@ export const youtubePlayerReq = async (
     config: Config,
     tokenMinter: TokenMinter,
 ): Promise<ApiResponse> => {
-    //const contentPoToken = await tokenMinter(videoId);
+    const contentPoToken = await tokenMinter(videoId);
     const safeProxySessionId = videoId.replaceAll("_", "-");
     const fetchImpl = getFetchClient(config, {
         proxySessionId: safeProxySessionId,
@@ -492,7 +492,7 @@ export const youtubePlayerReq = async (
     const res = await getBasicInfo(
         innertubeClient,
         videoId,
-        'contentPoToken',
+        contentPoToken,
         fetchImpl,
     );
 

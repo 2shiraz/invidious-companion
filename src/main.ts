@@ -6,6 +6,15 @@ import { USER_AGENT } from "bgutils";
 import type { HonoVariables } from "./lib/types/HonoVariables.ts";
 import { parseArgs } from "@std/cli/parse-args";
 import { existsSync } from "@std/fs/exists";
+import { maybeRunAsSupervisor } from "./lib/helpers/instanceSupervisor.ts";
+
+// SERVER_INSTANCE_COUNT > 1: fan out into N worker processes sharing one
+// port instead of continuing on as a single server. Must run before
+// parseConfig()/Innertube client creation/PO token generation below — none
+// of that should ever happen in the supervisor itself, only in workers.
+if (!(await maybeRunAsSupervisor())) {
+    Deno.exit(0);
+}
 
 import { parseConfig } from "./lib/helpers/config.ts";
 const config = await parseConfig();
@@ -142,7 +151,10 @@ async function refreshSharedInnertubeClient(): Promise<void> {
             console.log("[INFO] Shared Innertube client refreshed.");
             resolveTokenMinterReady();
         } catch (err) {
-            console.error("[ERROR] Failed to refresh shared Innertube client:", err);
+            console.error(
+                "[ERROR] Failed to refresh shared Innertube client:",
+                err,
+            );
             if (innertubeClientJobPoTokenEnabled) {
                 metrics?.potokenGenerationFailure.inc();
             }
@@ -251,6 +263,10 @@ export function run(signal: AbortSignal, port: number, hostname: string) {
                 signal: signal,
                 port: port,
                 hostname: hostname,
+                // Set for workers spawned by the multi-instance supervisor
+                // (SERVER_INSTANCE_COUNT) so they can all share this port;
+                // silently ignored on non-Linux/non-POSIX platforms.
+                reusePort: config.server.reuse_port,
             },
             app.fetch,
         );

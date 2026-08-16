@@ -22,7 +22,20 @@
 # verify_requests = false # env variable: SERVER_VERIFY_REQUESTS
 # encrypt_query_params = false # env variable: SERVER_ENCRYPT_QUERY_PARAMS
 # enable_metrics = false # env variable: SERVER_ENABLE_METRICS
- 
+# # sets SO_REUSEPORT so multiple processes can share this port (Linux
+# # only). Set automatically for workers spawned by SERVER_INSTANCE_COUNT
+# # below; only set this manually if you're running multiple instances
+# # yourself under your own process manager.
+# reuse_port = false # env variable: SERVER_REUSE_PORT
+
+## Multi-instance (not part of this [server] table, read directly from the
+## environment before config parsing happens):
+## SERVER_INSTANCE_COUNT — when set > 1, the compiled binary fans out into
+## that many worker processes sharing one port via SO_REUSEPORT instead of
+## running as a single process. Requires Linux and the compiled binary
+## (not `deno run`/`deno task dev`). Each worker still independently
+## creates its own Innertube session / mints its own PO token.
+
 # [cache]
 # enabled = true # env variable: CACHE_ENABLED
 # # will get cached in /var/tmp/youtubei.js if you specify /var/tmp
