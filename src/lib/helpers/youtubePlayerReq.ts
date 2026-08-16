@@ -18,7 +18,7 @@ import { getFetchClient } from "./getFetchClient.ts";
 
 const enableCompression = true;
 const TV_CONFIG_CACHE_TTL_MS = 15 * 60 * 1000;
-const REDIRECTOR_CACHE_TTL_MS = 5 * 1 * 1000;
+const REDIRECTOR_CACHE_TTL_MS = 15 * 60 * 1000;
 
 type CacheEntry<T> = {
     expiresAt: number;
