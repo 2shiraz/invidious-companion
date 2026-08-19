@@ -252,9 +252,9 @@ async function prepareOnesieRequest(
     const clonedInnerTubeContext = structuredClone(innertube.session.context);
 
     clonedInnerTubeContext.client.clientName =
-        Constants.CLIENTS.VISIONOS.NAME;
+        Constants.CLIENTS.TV_SIMPLY.NAME;
     clonedInnerTubeContext.client.clientVersion =
-        Constants.CLIENTS.VISIONOS.VERSION;
+        Constants.CLIENTS.TV_SIMPLY.VERSION;
 
     delete clonedInnerTubeContext.client.configInfo;
 
