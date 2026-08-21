@@ -72,7 +72,52 @@ export const OutputMessageSchema = z.union([
 ]);
 type OutputMessage = z.infer<typeof OutputMessageSchema>;
 
-const IntegrityTokenResponse = z.tuple([z.string()]).rest(z.any());
+const IntegrityTokenResponse = z.tuple([z.string()]).rest(z.unknown());
+
+type InitialAttestationResponse = {
+    bgChallenge?: {
+        program: string;
+        globalName: string;
+        interpreterUrl: {
+            privateDoNotAccessOrElseTrustedResourceUrlWrappedValue: string;
+        };
+    };
+};
+
+function parseLooseJSON(looseJson: string): Record<string, unknown> {
+    const sanitizedString = looseJson.replace(
+        /\\x([0-9A-Fa-f]{2})/g,
+        (_match, hex: string) => String.fromCharCode(parseInt(hex, 16)),
+    );
+
+    let jsonString = sanitizedString.replace(/,\s*([\]}])/g, "$1");
+    jsonString = jsonString.replace(
+        /'((?:[^'\\]|\\[\s\S])*)'/g,
+        (_match, innerString: string) =>
+            JSON.stringify(innerString.replace(/\\'/g, "'")),
+    );
+    jsonString = jsonString.replace(
+        /([{,]\s*)([a-zA-Z0-9_$]+)\s*:/g,
+        '$1"$2":',
+    );
+
+    const parsedData = JSON.parse(jsonString) as Record<string, unknown>;
+    for (const key in parsedData) {
+        const value = parsedData[key];
+        if (
+            typeof value === "string" &&
+            (value.trim().startsWith("{") || value.trim().startsWith("["))
+        ) {
+            try {
+                parsedData[key] = JSON.parse(value);
+            } catch {
+                // The value is an ordinary string, not nested JSON.
+            }
+        }
+    }
+
+    return parsedData;
+}
 
 const isWorker = typeof WorkerGlobalScope !== "undefined" &&
     self instanceof WorkerGlobalScope;
@@ -162,7 +207,33 @@ async function setup(
         },
     );
 
+    const pageResponse = await fetchImpl("https://www.youtube.com", {
+        headers: {
+            "accept": "*/*",
+            "accept-language": "en-US,en;q=0.7",
+            "user-agent": USER_AGENT,
+        },
+    });
+    if (!pageResponse.ok) {
+        throw new Error(
+            `Could not load YouTube page: HTTP ${pageResponse.status}`,
+        );
+    }
+
+    const pageHtml = await pageResponse.text();
+    const ytConfig = pageHtml.match(/ytcfg\.set\(({.+?})\);/s)?.[1];
+    if (!ytConfig) {
+        throw new Error("Could not find ytcfg in page HTML");
+    }
+
+    const yt = {
+        // BotGuard reads EVENT_ID through this object.
+        config_: JSON.parse(ytConfig),
+    };
+    Object.assign(dom.window, { yt });
+
     Object.assign(globalThis, {
+        yt,
         window: dom.window,
         document: dom.window.document,
         // location: dom.window.location, // --- doesn't seem to be necessary and the Web Worker doesn't like it
@@ -175,15 +246,25 @@ async function setup(
         });
     }
 
-    const challengeResponse = await innertubeClient.getAttestationChallenge(
-        "ENGAGEMENT_TYPE_UNBOUND",
+    const initialAttestationData = pageHtml.match(
+        /window\.ytAtN\(\s*({[\s\S]*?})\s*\)/,
     );
-    if (!challengeResponse.bg_challenge) {
+    if (!initialAttestationData) {
+        throw new Error("Could not find challenge in page HTML");
+    }
+
+    const initialAttestationDataJson = parseLooseJSON(
+        initialAttestationData[1],
+    );
+    const challengeResponse = initialAttestationDataJson.R as
+        | InitialAttestationResponse
+        | undefined;
+    if (!challengeResponse?.bgChallenge) {
         throw new Error("Could not get challenge");
     }
 
-    const interpreterUrl = challengeResponse.bg_challenge.interpreter_url
-        .private_do_not_access_or_else_trusted_resource_url_wrapped_value;
+    const interpreterUrl = challengeResponse.bgChallenge.interpreterUrl
+        .privateDoNotAccessOrElseTrustedResourceUrlWrappedValue;
     const bgScriptResponse = await fetchImpl(
         `https:${interpreterUrl}`,
     );
@@ -200,8 +281,8 @@ async function setup(
         '[INFO] the "Not implemented: HTMLCanvasElement.prototype.getContext" error is normal. Please do not open a bug report about it.',
     );
     const botguard = await BG.BotGuardClient.create({
-        program: challengeResponse.bg_challenge.program,
-        globalName: challengeResponse.bg_challenge.global_name,
+        program: challengeResponse.bgChallenge.program,
+        globalName: challengeResponse.bgChallenge.globalName,
         globalObj: globalThis,
     });
 
@@ -226,9 +307,28 @@ async function setup(
         await integrityTokenResponse.json(),
     );
 
-    const integrityTokenBasedMinter = await BG.WebPoMinter.create({
-        integrityToken: integrityTokenBody[0],
-    }, webPoSignalOutput);
+    const [
+        integrityToken,
+        estimatedTtlSecs,
+        mintRefreshThreshold,
+        websafeFallbackToken,
+    ] = integrityTokenBody;
+    const hasExtendedIntegrityTokenData =
+        typeof estimatedTtlSecs === "number" &&
+        typeof mintRefreshThreshold === "number" &&
+        typeof websafeFallbackToken === "string";
+    const integrityTokenData = hasExtendedIntegrityTokenData
+        ? {
+            integrityToken,
+            estimatedTtlSecs,
+            mintRefreshThreshold,
+            websafeFallbackToken,
+        }
+        : { integrityToken };
+    const integrityTokenBasedMinter = await BG.WebPoMinter.create(
+        integrityTokenData,
+        webPoSignalOutput,
+    );
 
     const sessionPoToken = await integrityTokenBasedMinter.mintAsWebsafeString(
         visitorData,
