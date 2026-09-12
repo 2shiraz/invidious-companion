@@ -259,7 +259,7 @@ async function prepareOnesieRequest(
     delete clonedInnerTubeContext.client.configInfo;
 
     const params = {
-        //adPlaybackContext: { pyv: true },
+        adPlaybackContext: { pyv: true },
         playbackContext: {
             contentPlaybackContext: {
                 vis: 0,
